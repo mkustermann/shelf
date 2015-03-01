@@ -7,7 +7,6 @@ library shelf.test_util;
 import 'dart:async';
 
 import 'package:shelf/shelf.dart';
-import 'package:shelf/src/util.dart';
 
 // "hello,"
 const HELLO_BYTES = const [104, 101, 108, 108, 111, 44];
@@ -31,8 +30,7 @@ Future<Response> asyncHandler(Request request) =>
     new Future(() => syncHandler(request));
 
 /// Makes a simple GET request to [handler] and returns the result.
-Future<Response> makeSimpleRequest(Handler handler) =>
-    syncFuture(() => handler(_request));
+Future<Response> makeSimpleRequest(Handler handler) async => handler(_request);
 
 final _request = new Request('GET', LOCALHOST_URI);
 

@@ -8,7 +8,6 @@ import 'package:stack_trace/stack_trace.dart';
 
 import '../hijack_exception.dart';
 import '../middleware.dart';
-import '../util.dart';
 
 /// Middleware which prints the time of the request, the elapsed time for the
 /// inner handlers, the response's status code and the request URI.
@@ -26,18 +25,20 @@ Middleware logRequests({void logger(String msg, bool isError)}) =>
     (innerHandler) {
   if (logger == null) logger = _defaultLogger;
 
-  return (request) {
+  return (request) async {
     var startTime = new DateTime.now();
     var watch = new Stopwatch()..start();
 
-    return syncFuture(() => innerHandler(request)).then((response) {
-      var msg = _getMessage(startTime, response.statusCode,
-          request.requestedUri, request.method, watch.elapsed);
+    try {
+      var response = await innerHandler(request);
+
+      var msg = _getMessage(startTime, response.statusCode, request.url,
+          request.method, watch.elapsed);
 
       logger(msg, false);
 
       return response;
-    }, onError: (error, stackTrace) {
+    } catch (error, stackTrace) {
       if (error is HijackException) throw error;
 
       var msg = _getErrorMessage(startTime, request.requestedUri,
@@ -46,7 +47,7 @@ Middleware logRequests({void logger(String msg, bool isError)}) =>
       logger(msg, true);
 
       throw error;
-    });
+    }
   };
 };
 

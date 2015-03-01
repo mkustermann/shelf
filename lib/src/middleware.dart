@@ -8,7 +8,6 @@ import 'request.dart';
 import 'response.dart';
 import 'handler.dart';
 import 'hijack_exception.dart';
-import 'util.dart';
 
 /// A function which creates a new [Handler] by wrapping a [Handler].
 ///
@@ -54,22 +53,21 @@ Middleware createMiddleware({requestHandler(Request request),
 
   if (responseHandler == null) responseHandler = (response) => response;
 
-  var onError = null;
-  if (errorHandler != null) {
-    onError = (error, stackTrace) {
-      if (error is HijackException) throw error;
-      return errorHandler(error, stackTrace);
-    };
-  }
-
   return (Handler innerHandler) {
-    return (request) {
-      return syncFuture(() => requestHandler(request)).then((response) {
-        if (response != null) return response;
+    return (request) async {
+      var response = await requestHandler(request);
+      if (response != null) return response;
 
-        return syncFuture(() => innerHandler(request)).then(
-            (response) => responseHandler(response), onError: onError);
-      });
+      try {
+        response = await innerHandler(request);
+      } catch (error, stackTrace) {
+        if (errorHandler != null) {
+          if (error is HijackException) throw error;
+          return errorHandler(error, stackTrace);
+        }
+        throw error;
+      }
+      return responseHandler(response);
     };
   };
 }

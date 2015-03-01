@@ -35,15 +35,14 @@ void main() {
       });
     });
 
-    test('async null response forwards to inner handler', () {
+    test('async null response forwards to inner handler', () async {
       var handler = const Pipeline()
           .addMiddleware(createMiddleware(
               requestHandler: (request) => new Future.value(null)))
           .addHandler(syncHandler);
 
-      return makeSimpleRequest(handler).then((response) {
-        expect(response.headers['from'], isNull);
-      });
+      var response = await makeSimpleRequest(handler);
+      expect(response.headers['from'], isNull);
     });
 
     test('sync response is returned', () {

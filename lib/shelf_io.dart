@@ -23,12 +23,13 @@ import 'src/util.dart';
 ///
 /// See the documentation for [HttpServer.bind] for more details on [address],
 /// [port], and [backlog].
-Future<HttpServer> serve(Handler handler, address, int port, {int backlog}) {
+Future<HttpServer> serve(Handler handler, address, int port,
+    {int backlog}) async {
   if (backlog == null) backlog = 0;
-  return HttpServer.bind(address, port, backlog: backlog).then((server) {
-    serveRequests(server, handler);
-    return server;
-  });
+  var server = await HttpServer.bind(address, port, backlog: backlog);
+
+  serveRequests(server, handler);
+  return server;
 }
 
 /// Serve a [Stream] of [HttpRequest]s.
@@ -51,7 +52,7 @@ void serveRequests(Stream<HttpRequest> requests, Handler handler) {
 /// Uses [handler] to handle [request].
 ///
 /// Returns a [Future] which completes when the request has been handled.
-Future handleRequest(HttpRequest request, Handler handler) {
+Future handleRequest(HttpRequest request, Handler handler) async {
   var shelfRequest;
   try {
     shelfRequest = _fromHttpRequest(request);
@@ -62,37 +63,33 @@ Future handleRequest(HttpRequest request, Handler handler) {
 
   // TODO(nweiz): abstract out hijack handling to make it easier to implement an
   // adapter.
-  return syncFuture(() => handler(shelfRequest))
-      .catchError((error, stackTrace) {
-    if (error is HijackException) {
-      // A HijackException should bypass the response-writing logic entirely.
-      if (!shelfRequest.canHijack) throw error;
+  var response;
+  try {
+    response = await handler(shelfRequest);
+  } on HijackException catch (error, stackTrace) {
+    // A HijackException should bypass the response-writing logic entirely.
+    if (!shelfRequest.canHijack) return null;
 
-      // If the request wasn't hijacked, we shouldn't be seeing this exception.
-      return _logError(
-          "Caught HijackException, but the request wasn't hijacked.",
-          stackTrace);
-    }
+    // If the request wasn't hijacked, we shouldn't be seeing this exception.
+    response = _logError(
+        "Caught HijackException, but the request wasn't hijacked.", stackTrace);
+  } catch (error, stackTrace) {
+    response = _logError('Error thrown by handler.\n$error', stackTrace);
+  }
 
-    return _logError('Error thrown by handler.\n$error', stackTrace);
-  }).then((response) {
-    if (response == null) {
-      response = _logError('null response from handler.');
-    } else if (!shelfRequest.canHijack) {
-      var message = new StringBuffer()
-        ..writeln("Got a response for hijacked request "
-            "${shelfRequest.method} ${shelfRequest.requestedUri}:")
-        ..writeln(response.statusCode);
-      response.headers
-          .forEach((key, value) => message.writeln("${key}: ${value}"));
-      throw new Exception(message.toString().trim());
-    }
+  if (response == null) {
+    response = _logError('null response from handler.');
+  } else if (!shelfRequest.canHijack) {
+    var message = new StringBuffer()
+      ..writeln("Got a response for hijacked request "
+          "${shelfRequest.method} ${shelfRequest.requestedUri}:")
+      ..writeln(response.statusCode);
+    response.headers
+        .forEach((key, value) => message.writeln("${key}: ${value}"));
+    throw new Exception(message.toString().trim());
+  }
 
-    return _writeResponse(response, request.response);
-  }).catchError((error, stackTrace) {
-    // Ignore HijackExceptions.
-    if (error is! HijackException) throw error;
-  });
+  return _writeResponse(response, request.response);
 }
 
 /// Creates a new [Request] from the provided [HttpRequest].
@@ -104,10 +101,9 @@ Request _fromHttpRequest(HttpRequest request) {
     headers[k] = v.join(',');
   });
 
-  onHijack(callback) {
-    return request.response
-        .detachSocket(writeHeaders: false)
-        .then((socket) => callback(socket, socket));
+  onHijack(callback) async {
+    var socket = await request.response.detachSocket(writeHeaders: false);
+    callback(socket, socket);
   }
 
   return new Request(request.method, request.requestedUri,
@@ -117,7 +113,7 @@ Request _fromHttpRequest(HttpRequest request) {
       onHijack: onHijack);
 }
 
-Future _writeResponse(Response response, HttpResponse httpResponse) {
+Future _writeResponse(Response response, HttpResponse httpResponse) async {
   httpResponse.statusCode = response.statusCode;
 
   response.headers.forEach((header, value) {
@@ -133,9 +129,8 @@ Future _writeResponse(Response response, HttpResponse httpResponse) {
     httpResponse.headers.date = new DateTime.now().toUtc();
   }
 
-  return httpResponse
-      .addStream(response.read())
-      .then((_) => httpResponse.close());
+  await httpResponse.addStream(response.read());
+  await httpResponse.close();
 }
 
 // TODO(kevmoo) A developer mode is needed to include error info in response
