@@ -1,3 +1,8 @@
+## 0.6.4+4
+
+* Add `serveSecure` and `handleHttp2Stream` to `shelf_io` library (including
+  http/2 support).
+
 ## 0.6.4+3
 
 * Support `http_parser` 2.0.0.

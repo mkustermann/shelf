@@ -18,9 +18,12 @@
 library shelf.io;
 
 import 'dart:async';
+import 'dart:convert';
 import 'dart:io';
 
 import 'package:stack_trace/stack_trace.dart';
+import 'package:http2/transport.dart';
+import 'package:http2/multiprotocol_server.dart';
 
 import 'shelf.dart';
 import 'src/util.dart';
@@ -39,6 +42,29 @@ Future<HttpServer> serve(Handler handler, address, int port, {int backlog}) {
     return server;
   });
 }
+
+/// Starts an [MultiProtocolHttpServer] that listens on the specified [address]
+/// and [port] and sends requests to [handler].
+///
+/// See the documentation for [HttpServer.bind] for more details on [address],
+/// [port].
+///
+/// The [context] must be a valid [SecurityContext] populated with a server
+/// certificate.
+Future<MultiProtocolHttpServer> serveSecure(
+    Handler handler,
+    address, int port, SecurityContext context) async {
+  var server = await MultiProtocolHttpServer.bind(address, port, context);
+  catchTopLevelErrors(() {
+    server.startServing(
+        (HttpRequest request) => handleRequest(request, handler),
+        (ServerTransportStream stream) => handleHttp2Stream(stream, handler));
+  }, (error, stackTrace) {
+    print('Asynchronous error\n$error' + stackTrace.toString());
+  });
+  return server;
+}
+
 
 /// Serve a [Stream] of [HttpRequest]s.
 ///
@@ -107,6 +133,80 @@ Future handleRequest(HttpRequest request, Handler handler) async {
   response.headers
       .forEach((key, value) => message.writeln("${key}: ${value}"));
   throw new Exception(message.toString().trim());
+}
+
+/// Uses [handler] to handle [stream].
+///
+/// Returns a [Future] which completes when the request has been handled.
+Future handleHttp2Stream(ServerTransportStream stream, Handler handler) async {
+  Future<Request> getRequest() async {
+    // Incoming messages
+    var messages = new StreamIterator(stream.incomingMessages);
+    bool hasHeaderMessage = await messages.moveNext();
+    assert(hasHeaderMessage);
+    HeadersStreamMessage message = messages.current;
+
+    Map<String, String> readHeaders() {
+      // For duplicated headers, we'll just take the first one.
+      var headers = {};
+      for (var header in message.headers) {
+        headers.putIfAbsent(
+            ASCII.decode(header.name), () => ASCII.decode(header.value));
+      }
+      return headers;
+    }
+
+    Stream<List<int>> readBody() async* {
+      while (await messages.moveNext()) {
+        var message = messages.current;
+        if (message is DataStreamMessage) {
+          yield message.bytes;
+        } else { /* ignored (e.g. trailing headers message) */ }
+      }
+    }
+
+    // TODO(kustermann): Make sure we get this stuff.
+    var headers = readHeaders();
+    var method = headers[':method'];
+    var scheme = headers[':scheme'];
+    var authority = headers[':authority'];
+    var path = headers[':path'];
+
+    var requestedUri = Uri.parse('$scheme://$authority$path');
+
+    return new Request(method, requestedUri,
+        protocolVersion: '2',
+        headers: headers,
+        body: readBody(),
+        onHijack: (callback) => throw new Exception("Hijacking not allowed."));
+  }
+
+  Future handleResponse(Response response) async {
+    List<Header> headers = [];
+    addHeader(String name, String value) {
+      headers.add(new Header(ASCII.encode(name), UTF8.encode(value)));
+    }
+    addHeader(':status', '${response.statusCode}');
+    response.headers.forEach(addHeader);
+
+    // TODO: We need to make sure Cookie headers / etc. have the don't index bit.
+    stream.outgoingMessages.add(new HeadersStreamMessage(headers));
+
+    var dataMessages = response
+        .read().map((List<int> data) => new DataStreamMessage(data));
+
+    await dataMessages.pipe(stream.outgoingMessages);
+  }
+
+  Request request = await getRequest();
+  Response response;
+  try {
+    response = await handler(request);
+  } catch (error, stackTrace) {
+    response = _logError(
+        request, 'Error thrown by handler.\n$error', stackTrace);
+  }
+  await handleResponse(response);
 }
 
 /// Creates a new [Request] from the provided [HttpRequest].
